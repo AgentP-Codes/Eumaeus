@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eumaeus"
+version = "0.1.0"
+description = "Decoys for AI agents: fake records in what an agent sees, and an alert the moment a tricked agent uses one"
+readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [{ name = "AgentP-Codes" }]
+requires-python = ">=3.10"
+dependencies = []
+keywords = ["ai-agents", "honeytokens", "canary", "prompt-injection", "mcp", "deception", "llm-security"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+
+[project.urls]
+Homepage = "https://github.com/AgentP-Codes/Eumaeus"
+Issues = "https://github.com/AgentP-Codes/Eumaeus/issues"
+
+[project.scripts]
+eumaeus = "eumaeus.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[tool.setuptools]
+packages = ["eumaeus"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+ignore = ["S101", "S311", "S603"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "B"]
