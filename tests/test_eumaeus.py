@@ -69,8 +69,9 @@ def test_a_decoy_looks_real_not_fake():
     assert s["id"].startswith("U07") and s["name"] == s["real_name"].split()[0].lower()
 
 
-def test_each_task_gets_its_own_decoys_and_never_a_real_value():
-    a, b = Factory("a"), Factory("b")
+def test_each_task_gets_its_own_decoys_and_never_a_real_value(tmp_path):
+    reg = Registry(tmp_path)                                   # as in use: one record of decoys per machine
+    a, b = Factory("a", reg), Factory("b", reg)
     da, db = a.for_template(STRIPE, "list_payments"), b.for_template(STRIPE, "list_payments")
     assert da.values.isdisjoint(db.values)
     assert a.for_template(STRIPE, "list_payments") is da                        # consistent within a task
@@ -260,7 +261,10 @@ def test_alerts_go_to_a_private_log_and_only_alerts_reach_the_terminal_and_webho
 
 # ------------------------------------------------------------------ end to end, as an agent app would run it
 def test_wrapped_connector_end_to_end(tmp_path):
-    env = {**os.environ, "EUMAEUS_HOME": str(tmp_path / "home"), "FAKE_OUTBOX": str(tmp_path / "out.jsonl")}
+    # PYTHONIOENCODING=cp1252: what Windows gives a program by default, so this test catches the same problems
+    # on every system (the alert text has "…" and the data has "José")
+    env = {**os.environ, "EUMAEUS_HOME": str(tmp_path / "home"), "FAKE_OUTBOX": str(tmp_path / "out.jsonl"),
+           "PYTHONIOENCODING": "cp1252"}
     msgs = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
             {"jsonrpc": "2.0", "method": "notifications/initialized"},
             {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "list_customers", "arguments": {}}}]
@@ -341,3 +345,17 @@ def test_a_tool_name_chosen_by_an_attacker_cant_rewrite_the_terminal_or_ping_sla
     err = capsys.readouterr().err
     assert "\x1b" not in err and "\r" not in err and "<!channel>" not in err
     assert posted and "<!channel>" not in posted[0] and "\x1b" not in posted[0]
+
+
+def test_a_decoy_value_is_never_the_real_one_or_an_earlier_tasks():
+    """Decoys are random; these used to be possible by bad luck (a two-digit id coming out the same, or a new
+    task's decoy matching an old task's, which would set off a false 'carried between tasks' alert)."""
+    import tempfile
+    reg = Registry(tempfile.mkdtemp())
+    seen: set[str] = set()
+    for i in range(300):
+        f = Factory(f"t{i}", reg)
+        d = f.for_template(HUBSPOT, "search_contacts")
+        assert d.record["id"] != HUBSPOT["id"]
+        assert not (d.values & seen), d.values & seen                  # never a value an earlier task was given
+        seen |= {v for v in d.values if "@" in v}

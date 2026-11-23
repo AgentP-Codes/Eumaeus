@@ -4,7 +4,11 @@
 
 The webhook address is a secret: give it in the EUMAEUS_WEBHOOK_URL environment variable, never on a command
 line or in a file in your project. It must be https, and a redirect is never followed, so the alert (and the
-address) can't be bounced somewhere else.
+address) can't be bounced somewhere else. EUMAEUS_WEBHOOK_FORMAT says what it expects:
+
+  slack   (default) a Slack incoming webhook: {"text": ...}
+  teams   a Microsoft Teams workflow ("post to a channel when a webhook request is received"): an Adaptive Card
+  json    anything else (a ticketing system, an automation tool): the alert itself, as JSON
 """
 
 from __future__ import annotations
@@ -33,7 +37,10 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 class Reporter:
     def __init__(self, folder: Path, webhook: str | None = None, quiet: bool = False,
-                 post: Any = None):
+                 post: Any = None, fmt: str = "slack"):
+        if fmt not in ("slack", "teams", "json"):
+            raise ValueError("the webhook format must be slack, teams or json")
+        self.fmt = fmt
         self.folder = folder
         self.folder.mkdir(parents=True, exist_ok=True)
         try:
@@ -49,7 +56,8 @@ class Reporter:
 
     def __call__(self, event: Event) -> None:
         entry = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "level": event.level, "kind": event.kind,
-                 "task": event.task, "tool": plain(event.tool), "area": event.area, "hint": event.hint,
+                 "client": event.client, "task": event.task, "tool": plain(event.tool), "area": event.area,
+                 "hint": event.hint,
                  "blocked": event.blocked, "detail": event.detail, "message": event.sentence()}
         try:
             fd = os.open(self.log, os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0), 0o600)
@@ -62,12 +70,25 @@ class Reporter:
         if not self.quiet:
             print(f"eumaeus ALERT: {event.sentence()}", file=sys.stderr, flush=True)
         if self.webhook:
-            threading.Thread(target=self._post_safely, args=(f":rotating_light: Eumaeus: {event.sentence()}",),
-                             daemon=True).start()
+            threading.Thread(target=self._post_safely, args=(self.body(entry),), daemon=True).start()
 
-    def _post_safely(self, text: str) -> None:
+    def body(self, entry: dict[str, Any]) -> dict[str, Any]:
+        text = f"Eumaeus: {entry['message']}"
+        if self.fmt == "teams":
+            return {"type": "message", "attachments": [{
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": {"$schema": "http://adaptivecards.io/schemas/adaptive-card.json", "type": "AdaptiveCard",
+                            "version": "1.4", "body": [
+                                {"type": "TextBlock", "text": "Eumaeus alert", "weight": "Bolder",
+                                 "color": "Attention"},
+                                {"type": "TextBlock", "text": entry["message"], "wrap": True}]}}]}
+        if self.fmt == "json":
+            return {"source": "eumaeus", **entry}
+        return {"text": f":rotating_light: {text}"}
+
+    def _post_safely(self, body: dict[str, Any]) -> None:
         try:
-            self._post(self.webhook, text)
+            self._post(self.webhook, body)
         except Exception as e:  # noqa: BLE001 - an alert that can't be sent is still in the log
             if not self._warned:
                 self._warned = True
@@ -75,10 +96,10 @@ class Reporter:
                       f"it's in {self.log}", file=sys.stderr, flush=True)
 
     @staticmethod
-    def _send(url: str, text: str) -> None:
+    def _send(url: str, payload: dict[str, Any]) -> None:
         if not url.lower().startswith("https://"):
             raise ValueError("the webhook address must start with https://")
-        body = json.dumps({"text": text}).encode("utf-8")
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"},  # noqa: S310
                                      method="POST")
         opener = urllib.request.build_opener(_NoRedirect())

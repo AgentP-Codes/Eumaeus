@@ -3,4 +3,4 @@
 """Eumaeus: decoys for AI agents. Fake records slipped into what an agent sees, and an alert the moment a
 tricked agent tries to use one."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.1"

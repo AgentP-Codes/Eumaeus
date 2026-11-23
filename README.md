@@ -5,7 +5,7 @@
 **Decoys for AI agents.** Eumaeus slips fake records into what an AI agent sees: a payment, a customer, a Slack user, an API key, shaped exactly like the real ones. No real job ever needs a decoy, so the moment an agent tries to refund one, email one or send its details anywhere, it has almost certainly been tricked by something it read. Eumaeus blocks that action and tells you which task it was.
 
 > [!WARNING]
-> **Early release (0.1).** Try it with test accounts and made-up data first. It's a tripwire, not a wall: it tells you when an agent has been tricked, and stops actions that use a decoy, but it doesn't stop a tricked agent from doing other harm with real data. Don't rely on it as your only protection. Provided "as is", without warranty, under the [AGPL-3.0 licence](LICENSE).
+> **Early release (0.2).** Try it with test accounts and made-up data first. It's a tripwire, not a wall: it tells you when an agent has been tricked, and stops actions that use a decoy, but it doesn't stop a tricked agent from doing other harm with real data. Don't rely on it as your only protection. Provided "as is", without warranty, under the [AGPL-3.0 licence](LICENSE).
 
 ## Why
 
@@ -26,7 +26,12 @@ Eumaeus sits between your agent app (Claude Desktop, or any app that uses MCP co
 | Opened a decoy record | Shows it (so nothing gives it away) and notes it. An alert if this kind of task has no business with that kind of record (a support agent opening API keys) |
 | Used a decoy (refund it, email it, update it) | Blocks it and alerts |
 | Sent a decoy's details out (in a message, an email body) | Blocks it and alerts |
+| Sent a decoy back only to the person whose records it was among (a customer emailed their own payment list) | Notes it: nothing has left |
 | Used a decoy from an **earlier** task | Blocks it and alerts: something is carrying data between tasks (a memory, a connector, a person) |
+
+A decoy is recognised even when it's sent out encoded or disguised (base64, hex, URL or HTML encoding, spacing, reversed, look-alike characters).
+
+**After a decoy is used, everything locks down.** The agent has been tricked, so every action (not just the one with the decoy), in every session on the computer, is refused until a person has looked and lifted it with `eumaeus clear` (or the button on the page below). Reading still works, so the agent's app doesn't fall over. `--no-lock` blocks only the action that used the decoy.
 
 Blocked calls get an ordinary-looking "not found" error by default, so the agent (and whoever is steering it) isn't told it hit a trap.
 
@@ -54,11 +59,46 @@ Put `eumaeus wrap ... --` in front of a connector's command in `claude_desktop_c
 
 `--task` says what the agent does: `support`, `refunds`, `bookkeeping`, `sales`, `dev` or `general` (the default). Opening a decoy of a kind the task never needs (payments in a support task, keys in anything but `dev`) is an alert.
 
+Other options:
+
+- `--watch`: never block or lock anything, only alert. Good for a trial on a live setup.
+- `--client "Acme Dental"`: a name shown in every alert, for when you look after several businesses.
+- `--no-lock`: see above.
+
+## The page
+
+```bash
+eumaeus ui
+```
+
+opens a page in your browser with whether agents are locked down (and a button to lift it), a timeline of everything caught, and, when Eurycleia is linked, the actions it blocked and the connectors waiting for approval. It runs on your computer only (127.0.0.1), and its address carries a secret made fresh each time, so other websites can't read it or press its button.
+
+## With Eurycleia
+
+[Eurycleia](https://github.com/AgentP-Codes/Project-Eurycleia) (0.8.0 or later) limits where an agent's data can go. Linked, the two work as one:
+
+```bash
+eumaeus link eurycleia
+```
+
+- A decoy used anywhere locks down Eurycleia too: it refuses every action until the lockdown is lifted (`eumaeus clear` or `eurycleia lockdown clear`, either works).
+- A connector whose tools changed since you approved them shows on the Eumaeus page.
+- The two talk through signed files in their own folders: nothing goes over the network, and a signal without the shared key is ignored.
+
+Put Eumaeus in front of Eurycleia, so the agent sees decoys and Eurycleia still checks every action:
+
+```json
+"args": ["wrap", "--task", "support", "--", "eurycleia", "serve", "--task", "support_reply", "--audit", "/Users/you/.eurycleia/audit.jsonl", "--", "npx", "-y", "@stripe/mcp"]
+```
+
+The page shows what Eurycleia blocked from its audit log in `~/.eurycleia/audit.jsonl`, which is where connectors set up with `eurycleia connect` write it; with `eurycleia serve`, give it that path as above.
+
 ## Alerts
 
 - Every alert and notice goes to `~/.eumaeus/alerts.jsonl` (private to your user). `eumaeus alerts` shows them; `eumaeus alerts --all` includes notices.
 - Alerts also go to the app's log (standard error).
 - To get them in Slack, create an [incoming webhook](https://api.slack.com/messaging/webhooks) and set it in the environment as `EUMAEUS_WEBHOOK_URL`. Never put it in a file in your project. It must be https; redirects are never followed.
+- For Microsoft Teams, use a workflow that posts to a channel when a webhook request is received, and also set `EUMAEUS_WEBHOOK_FORMAT=teams`. For anything else that takes JSON (a ticketing or automation tool), set `EUMAEUS_WEBHOOK_FORMAT=json`.
 
 Alerts never contain a decoy's full values, only enough of the start to find it.
 
@@ -66,8 +106,9 @@ Alerts never contain a decoy's full values, only enough of the start to find it.
 
 - **It catches the use of decoys, not everything a tricked agent does.** An agent fooled into misusing *real* data won't trip it unless it also touches a decoy. For limits on where real data can go, pair it with a data vault such as [Eurycleia](https://github.com/AgentP-Codes/Project-Eurycleia).
 - **Only results that are lists of records get decoys**, in JSON. A connector that returns plain text, or one record at a time, gets none.
-- **Recognising a decoy** looks for its distinctive values (ids, emails, card and phone numbers, keys, full names), as written or in upper or lower case. A decoy rewritten heavily enough (spelled out, encoded) won't be recognised.
-- **Your own files are part of the defence.** `~/.eumaeus` holds the key that recognises old decoys. An agent that can read or write files in your account could learn from it; don't give the agent you're protecting access to that folder.
+- **Recognising a decoy** looks for its distinctive values (ids, emails, card and phone numbers, keys, full names), as written or in the common encodings above. A decoy rewritten heavily enough (spelled out in words, encrypted, split across several messages) won't be recognised.
+- **A lockdown stops actions through Eumaeus (and Eurycleia, when linked)**, not everything: it doesn't revoke the agent's real logins or stop a connector used without them.
+- **Your own files are part of the defence.** `~/.eumaeus` holds the key that recognises old decoys and the key that signs lockdowns. An agent that can read or write files in your account could learn from them, or lift a lockdown; don't give the agent you're protecting access to that folder (or to `~/.eurycleia`).
 - **A decoy can, rarely, be opened by an honest agent** browsing a list. That's a notice, not an alert, unless the task has no business with that kind of record.
 - Tested with simulated connectors and made-up data. Not independently audited.
 

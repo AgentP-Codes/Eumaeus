@@ -2,12 +2,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """eumaeus: decoys for AI agents.
 
-  eumaeus wrap [--task KIND] [--label NAME] -- COMMAND...   put decoys in front of one MCP connector
-  eumaeus alerts [--all]                                    what the decoys caught
-  eumaeus demo                                              see it catch a tricked agent (made-up data)
+  eumaeus wrap [--task KIND] [--client NAME] [--watch] -- COMMAND...   decoys in front of one MCP connector
+  eumaeus alerts [--all]            what the decoys caught
+  eumaeus status                    is anything locked down, and is Eurycleia linked
+  eumaeus clear                     lift a lockdown once you've looked (in Eurycleia too, when linked)
+  eumaeus link eurycleia            let Eumaeus and Eurycleia signal each other
+  eumaeus ui                        a page in your browser with both products' alerts, on this computer only
+  eumaeus demo                      see it catch a tricked agent (made-up data)
 
-Alerts go to ~/.eumaeus/alerts.jsonl and the terminal; set EUMAEUS_WEBHOOK_URL (an https Slack incoming webhook,
-say) in the environment to also get them there.
+Alerts go to ~/.eumaeus/alerts.jsonl and the app's log; set EUMAEUS_WEBHOOK_URL (https) in the environment to
+also send them to Slack, Teams (EUMAEUS_WEBHOOK_FORMAT=teams) or anything that takes JSON (=json).
 """
 
 from __future__ import annotations
@@ -17,12 +21,14 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from . import __version__
 from .alerts import Reporter, home, read_alerts
 from .decoys import Registry
-from .tripwire import TASKS, Tripwire
+from .signals import Channel, link
+from .tripwire import TASKS, Tripwire, plain
 
 
 def cmd_wrap(a: argparse.Namespace) -> int:
@@ -32,11 +38,50 @@ def cmd_wrap(a: argparse.Namespace) -> int:
         print("give the connector's command after --, e.g. eumaeus wrap -- npx -y @stripe/mcp", file=sys.stderr)
         return 2
     folder = home(a.home)
-    reporter = Reporter(folder, os.environ.get("EUMAEUS_WEBHOOK_URL") or None)
-    tw = Tripwire(a.task, a.label or Path(command[-1]).name, Registry(folder), reporter, a.honest_errors)
-    print(f"eumaeus: watching task {tw.task} ({a.task}); alerts in {folder / 'alerts.jsonl'}", file=sys.stderr,
-          flush=True)
+    reporter = Reporter(folder, os.environ.get("EUMAEUS_WEBHOOK_URL") or None,
+                        fmt=os.environ.get("EUMAEUS_WEBHOOK_FORMAT") or "slack")
+    channel = Channel(folder, "eumaeus")
+    tw = Tripwire(a.task, a.label or Path(command[-1]).name, Registry(folder), reporter, a.honest_errors,
+                  watch=a.watch, lock_on_trip=not a.no_lock, client=a.client or "", channel=channel)
+    print(f"eumaeus: watching task {tw.task} ({a.task}{', watch mode: nothing is blocked' if a.watch else ''})"
+          f"{'; linked with Eurycleia' if channel.linked else ''}; alerts in {folder / 'alerts.jsonl'}",
+          file=sys.stderr, flush=True)
     return run(command, tw)
+
+
+def cmd_status(a: argparse.Namespace) -> int:
+    ch = Channel(home(a.home), "eumaeus")
+    lock = ch.lockdown()
+    print(f"linked with Eurycleia: {'yes (' + str(ch.peer_home) + ')' if ch.linked else 'no'}")
+    if lock:
+        print(f"LOCKED DOWN since {time.strftime('%Y-%m-%d %H:%M', time.localtime(lock['at']))}: "
+              f"{plain(lock.get('detail', ''), 300)}")
+        print("every agent's actions are refused; look at what happened, then run: eumaeus clear")
+        return 1
+    print("not locked down")
+    return 0
+
+
+def cmd_clear(a: argparse.Namespace) -> int:
+    ch = Channel(home(a.home), "eumaeus")
+    if ch.lockdown() is None:
+        print("nothing to clear: not locked down")
+        return 0
+    ch.send("clear", detail=a.reason or "cleared by a person")
+    print("lockdown lifted" + (" in Eumaeus and Eurycleia" if ch.linked else "") + "; agents can act again")
+    return 0
+
+
+def cmd_link(a: argparse.Namespace) -> int:
+    if a.other != "eurycleia":
+        print("only eurycleia can be linked", file=sys.stderr)
+        return 2
+    peer = Path(a.eurycleia_home or os.environ.get("EURYCLEIA_HOME") or Path.home() / ".eurycleia")
+    link(home(a.home), peer, "eumaeus", "eurycleia")
+    print(f"linked: Eumaeus ({home(a.home)}) and Eurycleia ({peer}) now share a key and signal each other.\n"
+          "A decoy used anywhere locks down both; `eumaeus clear` or `eurycleia lockdown clear` lifts it.\n"
+          "Put Eumaeus in front of Eurycleia: eumaeus wrap ... -- eurycleia serve ... -- <connector>")
+    return 0
 
 
 def cmd_alerts(a: argparse.Namespace) -> int:
@@ -112,13 +157,20 @@ def cmd_demo(a: argparse.Namespace) -> int:
     for e in shown:
         if e.level == "alert":
             print(f"   ALERT: {e.sentence()}")
-    print("\nThe decoys stopped the refund of a fake payment and the email that carried a fake customer, and said")
-    print("exactly which task was tricked. The real refunds still went through: Eumaeus raises the alarm, it")
-    print("doesn't decide what an agent may do. For that, put it with a vault such as Eurycleia.")
+    print("\nThe decoy payment's refund was blocked and said exactly which task was tricked. From then on the")
+    print("agent was locked down: the refunds after it and the email were refused too, until a person looks and")
+    print("runs `eumaeus clear`. The refunds before the decoy went through: Eumaeus raises the alarm at the first")
+    print("decoy, it doesn't decide what an agent may do. For that, put it with a vault such as Eurycleia.")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
+    # alerts go to standard error, which an agent app keeps as a log: always UTF-8, whatever the system uses
+    # (Windows would use its own code page and fail on a name like José, or on "…")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")      # `alerts` and `demo` print to a terminal of any kind
     ap = argparse.ArgumentParser(prog="eumaeus", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version=f"eumaeus {__version__}")
@@ -129,11 +181,35 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--label", default=None, help="a short name for this agent in alerts")
     s.add_argument("--honest-errors", action="store_true",
                    help="tell the agent a blocked call hit a decoy (by default it gets an ordinary-looking error)")
+    s.add_argument("--client", default=None, help="the client's name, shown in every alert (for MSPs)")
+    s.add_argument("--watch", action="store_true", help="never block anything; only alert (for trials)")
+    s.add_argument("--no-lock", action="store_true",
+                   help="don't lock down after a decoy is used (only the action using it is blocked)")
     s.add_argument("--home", default=None, help=argparse.SUPPRESS)
     s.add_argument("command", nargs=argparse.REMAINDER, help="-- the connector's command")
     s = sub.add_parser("alerts", help="what the decoys caught")
     s.add_argument("--all", action="store_true", help="include notices, not only alerts")
     s.add_argument("--home", default=None, help=argparse.SUPPRESS)
     sub.add_parser("demo", help="see it catch a tricked agent (made-up data)")
+    s = sub.add_parser("status", help="is anything locked down, and is Eurycleia linked")
+    s.add_argument("--home", default=None, help=argparse.SUPPRESS)
+    s = sub.add_parser("clear", help="lift a lockdown once you've looked at what happened")
+    s.add_argument("--reason", default=None, help="a note kept with the clear (who looked, what they found)")
+    s.add_argument("--home", default=None, help=argparse.SUPPRESS)
+    s = sub.add_parser("link", help="let Eumaeus and Eurycleia signal each other")
+    s.add_argument("other", choices=["eurycleia"])
+    s.add_argument("--eurycleia-home", default=None, help="where Eurycleia keeps its files (default ~/.eurycleia)")
+    s.add_argument("--home", default=None, help=argparse.SUPPRESS)
+    s = sub.add_parser("ui", help="a page in your browser with both products' alerts, on this computer only")
+    s.add_argument("--port", type=int, default=0, help="port on 127.0.0.1 (default: any free one)")
+    s.add_argument("--no-browser", action="store_true", help="don't open the browser, just print the address")
+    s.add_argument("--eurycleia-home", default=None, help=argparse.SUPPRESS)
+    s.add_argument("--home", default=None, help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
-    return {"wrap": cmd_wrap, "alerts": cmd_alerts, "demo": cmd_demo}[a.cmd](a)
+    return {"wrap": cmd_wrap, "alerts": cmd_alerts, "demo": cmd_demo, "status": cmd_status, "clear": cmd_clear,
+            "link": cmd_link, "ui": cmd_ui}[a.cmd](a)
+
+
+def cmd_ui(a: argparse.Namespace) -> int:
+    from .ui import serve
+    return serve(home(a.home), port=a.port, open_browser=not a.no_browser, eurycleia_home=a.eurycleia_home)

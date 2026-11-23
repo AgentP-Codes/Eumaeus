@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .encodings import squeeze, variants
+
 _rng = secrets.SystemRandom()
 
 FIRST = ("Olivia James Amelia Noah Isla Oliver Mia Leo Ava Lucas Grace Henry Chloe Ethan Zoe Jack Harper Liam "
@@ -149,15 +151,30 @@ class Decoy:
     task: str
     area: str                              # money, people, secrets, chat, records
     values: set[str] = field(default_factory=set)     # distinctive values, normalised
+    owners: set[str] = field(default_factory=set)     # emails of whoever the list it sat in belongs to
 
-    def matches(self, text: str) -> str | None:
-        """The decoy value found in a piece of text, if any."""
-        t = normalise(text)
-        digits = re.sub(r"\D", "", text)
+    def is_own(self, value: str) -> bool:
+        """Is this string part of the decoy record itself (so seeing it again isn't the real world having it)?"""
+        return value in _strings(self.record)
+
+    def matches(self, text: str | Reading) -> str | None:
+        """The decoy value found in a piece of text, however it was disguised, if any."""
+        r = text if isinstance(text, Reading) else Reading(text)
         for v in self.values:
-            if v in t or (v.isdigit() and len(v) >= 8 and v in digits):
+            sq = squeeze(v)
+            if any(v in f for f in r.forms) or (len(sq) >= 8 and any(sq in f for f in r.squeezed)) or \
+                    (v.isdigit() and len(v) >= 8 and any(v in d for d in r.digits)):
                 return v
         return None
+
+
+class Reading:
+    """One piece of text read every way that undoes a disguise (worked out once, checked against every decoy)."""
+
+    def __init__(self, text: str):
+        self.forms = variants(text)
+        self.squeezed = [squeeze(f) for f in self.forms]
+        self.digits = [re.sub(r"\D", "", f) for f in self.forms]
 
 
 def normalise(text: str) -> str:
@@ -194,12 +211,18 @@ class Factory:
 
     # ------------------------------------------------------------ noticing real data
     def saw(self, value: Any, depth: int = 0) -> None:
-        """Remember the distinctive real values in what the app returned (bounded)."""
+        """Remember the distinctive real values in what the app returned (bounded). A decoy value that turns
+        out to exist for real (a decoy named Tom Wilson, and then a real customer called Tom Wilson) stops
+        counting as a sign of a decoy: the real world has it too, so it can't prove anything."""
         if depth > 20 or len(self._real) > 50_000:
             return
         if isinstance(value, str):
             if len(value) >= 4:
-                self._real.add(normalise(value))
+                n = normalise(value)
+                self._real.add(n)
+                for d in self.decoys:
+                    if n in d.values and not d.is_own(value):
+                        d.values.discard(n)
         elif isinstance(value, (int, float)) and not isinstance(value, bool):
             self._real.add(str(value))
         elif isinstance(value, dict):
@@ -219,7 +242,12 @@ class Factory:
             return None
         decoy = Decoy(None, self.task, area_of(tool))
         real = _real_names(template, ("", ""))
-        person = _person({n for n in real} | {w for v in _strings(template) for w in re.findall(r"[A-Za-z]+", v)})
+        avoid = {n for n in real} | {w for v in _strings(template) for w in re.findall(r"[A-Za-z]+", v)}
+        person = _person(avoid)
+        for _ in range(50):                          # never the full name of anyone real seen so far
+            if normalise(f"{person[0]} {person[1]}") not in self._real:
+                break
+            person = _person(avoid)
         swaps: dict[str, str] = {}
         self._names = _real_names(template, person)      # real first/last -> fake, in every spelling
         decoy.record = self._fake(template, decoy, person, swaps, "", 0)
@@ -231,12 +259,16 @@ class Factory:
             self.registry.add(decoy)
         return decoy
 
-    def _fresh(self, make: Any) -> str:
-        for _ in range(20):
-            v = make()
-            if normalise(v) not in self._real:
+    def _fresh(self, make: Any, original: str) -> str:
+        """A new value that isn't the original, isn't any real value seen, and isn't a decoy an earlier task was
+        given (which would make that task's alert fire for this one)."""
+        v = make()
+        for _ in range(50):
+            taken = self.registry is not None and self.registry.known(v)
+            if v != original and normalise(v) not in self._real and not taken:
                 return v
-        return make()
+            v = make()
+        return v
 
     def _fake(self, value: Any, decoy: Decoy, person: tuple[str, str], swaps: dict[str, str], key: str,
               depth: int) -> Any:
@@ -280,25 +312,25 @@ class Factory:
                 any(k.endswith(w) for w in KEEP_WORDS) or DATE.match(value):
             return value
         if (m := EMAIL.match(value)) is not None:
-            v = self._fresh(lambda: f"{first.lower()}.{last.lower()}{_rng.randint(2, 99)}@{m.group(1)}")
+            v = self._fresh(lambda: f"{first.lower()}.{last.lower()}{_rng.randint(2, 99)}@{m.group(1)}", value)
             decoy.values.add(normalise(v))
             return v
         if UUID.match(value):
-            v = self._fresh(lambda: _same_classes(value.lower()).lower())
+            v = self._fresh(lambda: _same_classes(value.lower()).lower(), value)
             decoy.values.add(normalise(v))
             return v
         if (m := PREFIXED.match(value)) is not None:      # keep the start: real ids often share it (pi_3P...)
             keep = 2 if len(m.group(2)) >= 10 else 0
-            v = self._fresh(lambda: m.group(1) + m.group(2)[:keep] + _same_classes(m.group(2)[keep:]))
+            v = self._fresh(lambda: m.group(1) + m.group(2)[:keep] + _same_classes(m.group(2)[keep:]), value)
             decoy.values.add(normalise(v))
             return v
         if SLACK_ID.match(value):                         # U07..., C05...: the workspace's era is in the start
-            v = self._fresh(lambda: value[:3] + _same_classes(value[3:]))
+            v = self._fresh(lambda: value[:3] + _same_classes(value[3:]), value)
             decoy.values.add(normalise(v))
             return v
         digits = re.sub(r"\D", "", value)
         if 13 <= len(digits) <= 19 and _luhn_ok(digits) and re.fullmatch(r"[\d\s-]+", value):
-            card = self._fresh(lambda: _luhn_like(digits))
+            card = self._fresh(lambda: _luhn_like(digits), digits)
             it = iter(card)
             v = "".join(next(it) if ch.isdigit() else ch for ch in value)
             decoy.values.add(card)
@@ -306,11 +338,11 @@ class Factory:
         if PHONE.match(value) and len(digits) >= 8:
             keep = len(value) - len(value.lstrip("+0123456789")) if value.startswith("+") else 0
             keep = min(keep, 3) if value.startswith("+") else 2       # country code, or the first two digits
-            v = self._fresh(lambda: value[:keep] + _same_classes(value[keep:]))
+            v = self._fresh(lambda: value[:keep] + _same_classes(value[keep:]), value)
             decoy.values.add(re.sub(r"\D", "", v))
             return v
         if any(w in k for w in SECRET_WORDS) and len(value) >= 12 and " " not in value:
-            v = self._fresh(lambda: _same_classes(value))
+            v = self._fresh(lambda: _same_classes(value), value)
             decoy.values.add(normalise(v))
             return v
         named = self._swap_names(value)
@@ -324,12 +356,12 @@ class Factory:
             return v
         if (k == "id" or k.endswith("_id") or k.endswith("id")) and (value.isdigit() or HEX.match(value)
                                                                     or len(value) >= 6):
-            v = self._fresh(lambda: _same_classes(value))
+            v = self._fresh(lambda: _same_classes(value), value)
             if len(v) >= 5:
                 decoy.values.add(normalise(v))
             return v
         if DIGITS.match(value) and len(value) >= 8:
-            v = self._fresh(lambda: _same_classes(value))
+            v = self._fresh(lambda: _same_classes(value), value)
             decoy.values.add(v)
             return v
         return value
@@ -344,8 +376,11 @@ class Factory:
 
     # ------------------------------------------------------------ recognising
     def find(self, text: str) -> tuple[Decoy, str] | None:
+        if not self.decoys:
+            return None
+        reading = Reading(text)
         for d in self.decoys:
-            if (v := d.matches(text)) is not None:
+            if (v := d.matches(reading)) is not None:
                 return d, v
         return None
 
@@ -386,6 +421,10 @@ class Registry:
             _private(p)
             return k
 
+    def known(self, value: str) -> bool:
+        """Is this value a decoy some task was already given?"""
+        return self.print_of(value) in self._prints
+
     def print_of(self, value: str) -> str:
         return hmac.new(self.key, normalise(value).encode("utf-8"), hashlib.sha256).hexdigest()[:32]
 
@@ -404,15 +443,22 @@ class Registry:
             pass
 
     def find(self, text: str, current_task: str) -> tuple[str, str] | None:
-        """(the earlier task, the value) for a decoy from another task found in `text`."""
-        for m in TOKEN.finditer(text[:200_000]):
-            raw = m.group(0)
-            for candidate in {raw, re.sub(r"\D", "", raw)}:
-                if len(candidate) < 5:
-                    continue
-                task = self._prints.get(self.print_of(candidate))
-                if task is not None and task != current_task:
-                    return task, candidate
+        """(the earlier task, the value) for a decoy from another task found in `text`, however disguised."""
+        if not self._prints:
+            return None
+        checked = 0
+        for form in variants(text):
+            for m in TOKEN.finditer(form):
+                checked += 1
+                if checked > 5000:
+                    return None
+                raw = m.group(0)
+                for candidate in {raw, re.sub(r"\D", "", raw)}:
+                    if len(candidate) < 5:
+                        continue
+                    task = self._prints.get(self.print_of(candidate))
+                    if task is not None and task != current_task:
+                        return task, candidate
         return None
 
 

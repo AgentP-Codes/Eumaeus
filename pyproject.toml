@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "eumaeus"
-version = "0.1.0"
+version = "0.2.1"
 description = "Decoys for AI agents: fake records in what an agent sees, and an alert the moment a tricked agent uses one"
 readme = "README.md"
 license = "AGPL-3.0-only"
