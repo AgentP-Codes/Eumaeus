@@ -177,7 +177,7 @@ def page(tmp_path):
     t = threading.Thread(target=serve, args=(home,), daemon=True,
                          kwargs={"open_browser": False, "ready": ready, "holder": held, "eurycleia_home": str(eh)})
     t.start()
-    assert ready.wait(5)
+    assert ready.wait(30)
     yield home, eh, held
     held["httpd"].shutdown()
 

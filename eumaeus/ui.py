@@ -19,6 +19,7 @@ from __future__ import annotations
 import hmac
 import json
 import secrets
+import socketserver
 import sys
 import threading
 import webbrowser
@@ -150,6 +151,7 @@ button { font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid
 table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 14px; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { color: var(--muted); font-weight: 500; } td.what { overflow-wrap: anywhere; }
+td:first-child { white-space: nowrap; }
 .alert { color: var(--alert); font-weight: 600; } .muted { color: var(--muted); }
 """
 
@@ -268,10 +270,19 @@ def make_handler(home: Path, token: str, eurycleia_home: str | None) -> type[Bas
     return Handler
 
 
+class _Server(ThreadingHTTPServer):
+    """The standard server, without its look-up of this computer's name when it starts (it only uses the name for
+    a variable nothing here reads, and on some computers, macOS among them, the look-up takes many seconds)."""
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = str(self.server_address[0]), int(self.server_address[1])
+
+
 def serve(home: Path, port: int = 0, open_browser: bool = True, eurycleia_home: str | None = None,
           ready: threading.Event | None = None, holder: dict | None = None) -> int:
     token = secrets.token_urlsafe(24)
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(home, token, eurycleia_home))
+    httpd = _Server(("127.0.0.1", port), make_handler(home, token, eurycleia_home))
     httpd.daemon_threads = True
     url = f"http://127.0.0.1:{httpd.server_address[1]}/?t={token}"
     if holder is not None:

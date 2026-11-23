@@ -1,0 +1,40 @@
+name: Something's wrong
+description: A bug, a false alarm, or a decoy that gave itself away
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security problems go here instead, privately:** the Security tab, then "Report a vulnerability".
+        Please use made-up data only. Never paste real customer details, keys or webhook addresses.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of problem
+      options:
+        - A false alarm (an honest agent was flagged)
+        - A decoy looked fake, or gave itself away
+        - A decoy was used and not caught
+        - It crashed or broke a connector
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead. Paste the alert text if there was one.
+    validations:
+      required: true
+  - type: input
+    id: connector
+    attributes:
+      label: Which connector
+      placeholder: e.g. @stripe/mcp 0.2.4
+  - type: input
+    id: version
+    attributes:
+      label: Eumaeus version, system and agent app
+      placeholder: e.g. eumaeus 0.2.1, Windows 11, Claude Desktop
+    validations:
+      required: true

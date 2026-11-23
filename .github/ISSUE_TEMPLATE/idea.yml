@@ -1,0 +1,16 @@
+name: An idea
+description: A connector or kind of record to cover, or something that would make it more useful
+labels: [idea]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: What would you like Eumaeus to do, and for which apps or agents?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it matters to you
+      description: The situation you're in. For example, "I look after 20 small businesses using HubSpot agents".
